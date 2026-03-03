@@ -24,12 +24,14 @@
         .\winfe.ps1 -DriveLetter E: -Offline -FilePath C:\Temp
     .TODO
         Make another TEMP directory besides Windows\Temp
+        Cache downloads 
     #>
-
+[CmdletBinding()]
 param (
   [string]$DriveLetter,
   [string]$Mode = "online",
-  [string]$FilePath = "C:\Temp",
+  [string]$WorkingFilePath = ("C:\Temp\WinFE_{0:yyyyMMddThhmmss}" -f $(get-date)),
+  [string]$FileRepoPath = $(join-path  $(split-path -path $MyInvocation.MyCommand.Path -Parent) "files"),
   [switch]$MakeIso,
   [switch]$DownloadOnly,
   [switch]$Help,
@@ -71,7 +73,7 @@ param (
 [string]$ADKPATH="C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit"
 [string]$WPEPATH="$ADKPATH\Windows Preinstallation Environment"
 [string]$DTPATH="$ADKPATH\Deployment Tools"
-[string]$WINFEPATH="$FilePath\IntelWinFE"
+[string]$WINFEPATH="$WorkingFilePath\IntelWinFE"
 [string]$TEMPPATH="$WINFEPATH\Temp"
 
 $ProgressPreference = "SilentlyContinue"
@@ -81,7 +83,7 @@ function Compare-Hash($FileName, $HashName) {
     if ($fileHash -eq $HashName) {
         Write-Host "[+] Hashes match for $FileName, continuing..." -ForegroundColor Green
     } else {
-        Write-Host "[+] Hashes do not match for $FileName, not continuing." -ForegroundColor Red
+        Write-Host "[+] Hashes do not match for $FileName, not continuing. Try running again after deleting the file." -ForegroundColor Red
         Throw "File integrity validation error for $FileName`n`tExpected hash: $fileHash`n`tObserved hash: $HashName "
     }
 }
@@ -187,32 +189,44 @@ function Create-DismImage {
     }
 }
 
+function get-sourcefile {
+    [CmdletBinding()]
+    param (
+        $sourcefile,
+        $sourcehash
+    )
+    $SourceFilePath = join-path $FileRepoPath $sourcefile.value
+    if (-not $(test-path $SourceFilePath)) {
+     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Host "[-] Downloading $($DOWNLOAD.Name) to $SourceFilePath" -ForegroundColor Yellow
+        Start-BitsTransfer -Source $($DOWNLOAD.Name) -Destination $SourceFilePath
+    }
+}
 
 function Install-ScriptRequirements {
+    Create-WorkingFilePath
+
     Write-Host "[-] Checking for Script Requirements" -ForegroundColor Yellow
-    if (($Mode -eq 'offline') -and ($FilePath)) {
+    if (($Mode -eq 'offline') -and ($WorkingFilePath)) {
         if (-Not(Test-Path 'C:\Program Files\PackageManagement\ProviderAssemblies\nuget')) {
             Write-Host "[!] Missing the nuget module in your ProviderAssemblies folder. See -Help for more info" -ForegroundColor Red
             exit 1
         } else {
             Write-Host "[+] Nuget is installed, importing 7Zip4Powershell Module" -ForegroundColor Yellow
-            New-Item -ItemType 'directory' -Path "C:\Temp" | Out-Null
+            New-Item -ItemType 'directory' -Path $WorkingFilePath | Out-Null
             if (Get-Module -ListAvailable -Name 7Zip4Powershell) {
                 Write-Host "[+] 7Zip4PowerShell module is already installed, continuing" -ForegroundColor Green
-            } elseif (Test-Path "$FilePath\7Zip4Powershell.*") {
-                Copy-Item -Path "$FilePath\7Zip4Powershell.*" -Destination "C:\Temp\"
+            } elseif (Test-Path "$WorkingFilePath\7Zip4Powershell.*") {
+                Copy-Item -Path "$WorkingFilePath\7Zip4Powershell.*" -Destination "C:\Temp\"
                 Register-PSRepository -Name Temp -SourceLocation "C:\Temp" -InstallationPolicy Trusted
                 Install-Module -Name 7Zip4Powershell -Repository Temp
                 Unregister-PSRepository -Name Temp
             } else {
-                Write-Host "[!] 7Zip4Powershell module not found - check to see that it exists in $FilePath" -ForegroundColor Red
+                Write-Host "[!] 7Zip4Powershell module not found - check to see that it exists in $WorkingFilePath" -ForegroundColor Red
                 exit 1
                 }
         } 
     } elseif ($Mode -eq 'online') {
-        if(-not(Test-Path $FilePath)) {
-            Create-FilePath
-        }
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Write-Host "[-] Installing NuGet > v2.8.5.201" -ForegroundColor Yellow
         if (Test-Path 'C:\Program Files\PackageManagement\ProviderAssemblies\nuget') {
@@ -246,8 +260,8 @@ function Test-ADK {
 }
 
 function Start-Downloads {
-	if (-not(Test-Path $FilePath)) {
-		Create-FilePath
+	if (-not(Test-Path $WorkingFilePath)) {
+		Create-WorkingFilePath
 	}
     Write-Host "[-] Beginning file downloads" -ForegroundColor Yellow
     $DOWNLOADS = [ordered]@{
@@ -264,16 +278,14 @@ function Start-Downloads {
 
     }
     foreach ($DOWNLOAD in $DOWNLOADS.GetEnumerator()) {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Write-Host "[-] Downloading $($DOWNLOAD.Name) to $FilePath\$($DOWNLOAD.Value)" -ForegroundColor Yellow
-        Start-BitsTransfer -Source $($DOWNLOAD.Name) -Destination "$FilePath\$($DOWNLOAD.Value)"
+        get-sourcefile -sourcefile $DOWNLOAD
     }
     $HASHES = [ordered]@{
-        "$FilePath\$WIN10ADK_FN" = "$WIN10ADK_HASH" ;
-        "$FilePath\$WIN10ADKPE_FN" = "$WIN10ADKPE_HASH" ;
-#        "$FilePath\$FTKIMG_x86_FN" = "$FTKIMG_x86_HASH" ;
-        "$FilePath\$FTKIMG_x64_FN" = "$FTKIMG_x64_HASH" ;
-        "$FilePath\$WINFE_FN" = "$WINFE_HASH";
+        "$WIN10ADK_FN" = "$WIN10ADK_HASH" ;
+        "$WIN10ADKPE_FN" = "$WIN10ADKPE_HASH" ;
+#        "$FTKIMG_x86_FN" = "$FTKIMG_x86_HASH" ;
+        "$FTKIMG_x64_FN" = "$FTKIMG_x64_HASH" ;
+        "$WINFE_FN" = "$WINFE_HASH";
     }
     if ($SKIPADK) {
         $HASHES.RemoveAt(0)
@@ -281,7 +293,8 @@ function Start-Downloads {
 
     }
     foreach ($HASH in $HASHES.GetEnumerator()) {
-        Compare-Hash -FileName $($HASH.Name) -HashName $($HASH.Value)
+        Compare-Hash -FileName $(join-path $FileRepoPath $HASH.Name) -HashName $HASH.Value
+
     }
     if (($XUser -ne "") -and ($XPass -ne "")) {
         Download-XWays
@@ -291,14 +304,14 @@ function Start-Downloads {
 
 function Install-WinFERequirements {
     $SKIPADK = Test-ADK
-    if (($Mode -eq 'offline') -and ($FilePath)) {
-        $FilePath = $FilePath.TrimEnd('\')
+    if (($Mode -eq 'offline') -and ($WorkingFilePath)) {
+        $WorkingFilePath = $WorkingFilePath.TrimEnd('\')
         $HASHES = [ordered]@{
-            "$FilePath\$WIN10ADK_FN" = "$WIN10ADK_HASH" ;
-            "$FilePath\$WIN10ADKPE_FN" = "$WIN10ADKPE_HASH" ;
-#            "$FilePath\$FTKIMG_x86_FN" = "$FTKIMG_x86_HASH" ;
-            "$FilePath\$FTKIMG_x64_FN" = "$FTKIMG_x64_HASH" ;
-            "$FilePath\$WINFE_FN" = "$WINFE_HASH"
+            "$WorkingFilePath\$WIN10ADK_FN" = "$WIN10ADK_HASH" ;
+            "$WorkingFilePath\$WIN10ADKPE_FN" = "$WIN10ADKPE_HASH" ;
+#            "$WorkingFilePath\$FTKIMG_x86_FN" = "$FTKIMG_x86_HASH" ;
+            "$WorkingFilePath\$FTKIMG_x64_FN" = "$FTKIMG_x64_HASH" ;
+            "$WorkingFilePath\$WINFE_FN" = "$WINFE_HASH"
         }
         if ($SKIPADK) {
            $HASHES.RemoveAt(0)
@@ -308,7 +321,7 @@ function Install-WinFERequirements {
             Compare-Hash -FileName $($HASH.Name) -HashName $($HASH.Value)
         }
     } elseif ($Mode -eq 'online') {
-        $FilePath = "C:\Temp"
+        $WorkingFilePath = "C:\Temp"
     }
     #$PROGRAMS = [ordered]@{ "$FTKIMG_x86_FN" = '/s /v/qn /v"INSTALLDIR="C:\FTKIMGx86""' ; "$FTKIMG_x64_FN" = '/s /v/qn /v"INSTALLDIR="C:\FTKIMGx64""'; "$WIN10ADK_FN" = "/quiet"}
     $PROGRAMS = [ordered]@{ "$WIN10ADK_FN" = "/features OptionId.DeploymentTools /quiet /norestart"; "$WIN10ADKPE_FN" = "/quiet  /norestart"; "$FTKIMG_x64_FN" = '/s /v/qn /v"INSTALLDIR="C:\FTKIMGx64""'}
@@ -323,18 +336,18 @@ function Install-WinFERequirements {
     else {
         foreach ($PROGRAM in $PROGRAMS.GetEnumerator()) {
             Write-Host "[-] Installing $($PROGRAM.Name)" -ForegroundColor Yellow
-            Start-Process -Wait -FilePath "$FilePath\$($PROGRAM.Name)" -ArgumentList "$($PROGRAM.Value)" -PassThru | Out-Null
+            $installer = join-path $FileRepoPath $($PROGRAM.Name)
+            Start-Process -Wait -FilePath $installer -ArgumentList "$($PROGRAM.Value)" -PassThru | Out-Null
             if ($?) {
                 Write-Host "[+] $($PROGRAM.Name) installed successfully" -ForegroundColor Green
                 if ($($PROGRAM.Name) -like "*FTK*") { 
                     $INSTALLDIR = $($PROGRAM.Value).Split('=').Split('"')[3]
-                    write-host -ForegroundColor Yellow ('$INSTALLDIR: {0}' -f $INSTALLDIR)
-                    $DEST = $INSTALLDIR.Split('\')[1]
-                    Write-Host "[-] Creating $FilePath\$DEST" -ForegroundColor Yellow
-                    New-Item -ItemType "directory" -Path "$FilePath" -Name "$DEST" -Force | Out-Null
-                    Get-ChildItem -Path "$INSTALLDIR\FTK Imager\" | Copy-Item -Destination "$FilePath\$DEST" -Recurse -Container -Force
-                    Write-Host "[+] $INSTALLDIR\FTK Imager\ copied to $FilePath\$DEST" -ForegroundColor Green
-                    Start-Process -Wait -FilePath "$FilePath\$($PROGRAM.Name)" -ArgumentList "/x /s /v/qn" -PassThru | Out-Null 
+                    $global:FTKDEST = join-path $WorkingFilePath $INSTALLDIR.Split('\')[1]
+                    Write-Host "[-] Creating $global:FTKDEST" -ForegroundColor Yellow
+                    New-Item -ItemType "directory" $global:FTKDEST -Force | Out-Null
+                    Get-ChildItem -Path "$INSTALLDIR\FTK Imager\" | Copy-Item -Destination $global:FTKDEST -Recurse -Container -Force
+                    Write-Host "[+] $INSTALLDIR\FTK Imager\ copied to $global:FTKDEST" -ForegroundColor Green
+                    Start-Process -Wait -FilePath $installer -ArgumentList "/x /s /v/qn" -PassThru | Out-Null 
                     if ($?) {
                         Write-Host "[+] $($PROGRAM.Name) uninstalled" -ForegroundColor Green
                     } else {
@@ -342,7 +355,7 @@ function Install-WinFERequirements {
                     }
                 } 
             } else {
-                Write-Host "[!] Installation of $($PROGRAM.Name) failed. Please re-run the installer to try again" -ForegroundColor Red
+                Write-Host "[!] Installation of $($PROGRAM.Name) at $installer failed. Please re-run the installer to try again" -ForegroundColor Red
                 exit 1
             }
         }
@@ -350,54 +363,66 @@ function Install-WinFERequirements {
 } 
 
 function Extract-WinFE {
-    Write-Host "[-] Extracting WinFE to $FilePath" -ForegroundColor Yellow
-    Expand-7Zip -ArchiveFileName "$FilePath\$WINFE_FN" -TargetPath "$FilePath"
-        #Expand-7Zip -ArchiveFileName "$FilePath\$WINFE_FN" -TargetPath "$FilePath\IntelWinFE"
+    Write-Host "[-] Extracting WinFE to $WorkingFilePath" -ForegroundColor Yellow
+    Expand-7Zip -ArchiveFileName "$FileRepoPath\$WINFE_FN" -TargetPath "$WorkingFilePath"
+        #Expand-7Zip -ArchiveFileName "$WorkingFilePath\$WINFE_FN" -TargetPath "$WorkingFilePath\IntelWinFE"
 
 }
 
 function Extract-FTKImager8664 {
-    Write-Host "[-] Extracting FTK Imager x86 to $FilePath" -ForegroundColor Yellow
-    Expand-7Zip -ArchiveFileName "$FilePath\$FTKIMG_x86_FN" -TargetPath "$FilePath\FTKIMGx86"
+    Write-Host "[-] Extracting FTK Imager x86 to $WorkingFilePath" -ForegroundColor Yellow
+    Expand-7Zip -ArchiveFileName "$FileRepoPath\$FTKIMG_x86_FN" -TargetPath "$WorkingFilePath\FTKIMGx86"
     if ($?) {
         Write-Host "[+] FTK Imager x86 extracted successfully" -ForegroundColor Green
     }
-    Write-Host "[-] Extracting FTK Imager x64 to $FilePath" -ForegroundColor Yellow
-    Expand-7Zip -ArchiveFileName "$FilePath\$FTKIMG_x64_FN" -TargetPath "$FilePath\FTKIMGx64"
+    Write-Host "[-] Extracting FTK Imager x64 to $WorkingFilePath" -ForegroundColor Yellow
+    Expand-7Zip -ArchiveFileName "$FileRepoPath\$FTKIMG_x64_FN" -TargetPath "$WorkingFilePath\FTKIMGx64"
         if ($?) {
         Write-Host "[+] FTK Imager x64 extracted successfully" -ForegroundColor Green
     }
 }
 
 function Move-Requirements {
-#    New-Item -ItemType "directory" -Path "$FilePath\IntelWinFE\USB\x86-x64\tools\x86\" -Name "FTK Imager" -Force | Out-Null
-    New-Item -ItemType "directory" -Path "$FilePath\IntelWinFE\USB\x86-x64\tools\x64\" -Name "FTK Imager" -Force | Out-Null
-#    Write-Host "[-] Copying FTK Imager x86 installation to $FilePath\IntelWinFE\USB\x86-x64\tools\x86\FTK Imager" -ForegroundColor Yellow
-#    Get-ChildItem -Path "$FilePath\FTKIMGx86\" | Copy-Item -Destination "$FilePath\IntelWinFE\USB\x86-x64\tools\x86\FTK Imager" -Recurse -Container
-    Write-Host "[-] Copying FTK Imager x64 installation to $FilePath\IntelWinFE\USB\x86-x64\tools\x64\FTK Imager" -ForegroundColor Yellow
-    Get-ChildItem -Path "$FilePath\FTKIMGx64\" | Copy-Item -Destination "$FilePath\IntelWinFE\USB\x86-x64\tools\x64\FTK Imager" -Recurse -Container
+#    New-Item -ItemType "directory" -Path "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x86\" -Name "FTK Imager" -Force | Out-Null
+    New-Item -ItemType "directory" -Path "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x64\" -Name "FTK Imager" -Force | Out-Null
+#    Write-Host "[-] Copying FTK Imager x86 installation to $WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x86\FTK Imager" -ForegroundColor Yellow
+#    Get-ChildItem -Path "$WorkingFilePath\FTKIMGx86\" | Copy-Item -Destination "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x86\FTK Imager" -Recurse -Container
+    Write-Host "[-] Copying FTK Imager x64 installation to $WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x64\FTK Imager" -ForegroundColor Yellow
+    Get-ChildItem -Path $global:FTKDEST | Copy-Item -Destination "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x64\FTK Imager" -Recurse -Container
     if (($XUser -ne "") -and ($XPass -ne "")){
-        New-Item -ItemType "directory" -Path "$FilePath\IntelWinFE\USB\x86-x64\tools\x86\" -Name "X-Ways" -Force | Out-Null
-        New-Item -ItemType "directory" -Path "$FilePath\IntelWinFE\USB\x86-x64\tools\x64\" -Name "X-Ways" -Force | Out-Null
-        Write-Host "[-] Copying X-Ways installation to $FilePath\IntelWinFE\USB\x86-x64\tools\x86\X-Ways" -ForegroundColor Yellow
-        Expand-7Zip -ArchiveFileName "$FilePath\xw_forensics$XWVERSION.zip" -TargetPath "$FilePath\IntelWinFE\USB\x86-x64\tools\x86\X-Ways"
-        Expand-7Zip -ArchiveFileName "$FilePath\xw_viewer.zip" -TargetPath "$FilePath\IntelWinFE\USB\x86-x64\tools\x86\X-Ways"
-        Write-Host "[-] Copying X-Ways installation to $FilePath\IntelWinFE\USB\x86-x64\tools\x64\X-Ways" -ForegroundColor Yellow
-        Expand-7Zip -ArchiveFileName "$FilePath\xw_forensics$XWVERSION.zip" -TargetPath "$FilePath\IntelWinFE\USB\x86-x64\tools\x64\X-Ways"
-        Expand-7Zip -ArchiveFileName "$FilePath\xw_iewer.zip" -TargetPath "$FilePath\IntelWinFE\USB\x86-x64\tools\x64\X-Ways"
+        New-Item -ItemType "directory" -Path "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x86\" -Name "X-Ways" -Force | Out-Null
+        New-Item -ItemType "directory" -Path "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x64\" -Name "X-Ways" -Force | Out-Null
+        Write-Host "[-] Copying X-Ways installation to $WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x86\X-Ways" -ForegroundColor Yellow
+        Expand-7Zip -ArchiveFileName "$WorkingFilePath\xw_forensics$XWVERSION.zip" -TargetPath "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x86\X-Ways"
+        Expand-7Zip -ArchiveFileName "$WorkingFilePath\xw_viewer.zip" -TargetPath "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x86\X-Ways"
+        Write-Host "[-] Copying X-Ways installation to $WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x64\X-Ways" -ForegroundColor Yellow
+        Expand-7Zip -ArchiveFileName "$WorkingFilePath\xw_forensics$XWVERSION.zip" -TargetPath "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x64\X-Ways"
+        Expand-7Zip -ArchiveFileName "$WorkingFilePath\xw_iewer.zip" -TargetPath "$WorkingFilePath\IntelWinFE\USB\x86-x64\tools\x64\X-Ways"
     }
 }
 
 function Run-WinFEBatch {
-    Set-Location -Path "$FilePath\IntelWinFE\"
-    Write-Host "[-] Running MakeWinFEx64-x86.bat" -ForegroundColor Yellow
-    Start-Process -Wait -FilePath "$FilePath\IntelWinFE\MakeWinFEx64-x86.bat" -PassThru -NoNewWindow
+    try {
+        $CallerDirLocation = get-location
+        Set-Location -Path "$WorkingFilePath\IntelWinFE\"
+        Write-Host "[-] Running MakeWinFEx64-x86.bat" -ForegroundColor Yellow
+        Start-Process -Wait -FilePath "$WorkingFilePath\IntelWinFE\MakeWinFEx64-x86.bat" -PassThru -NoNewWindow
+    }
+    finally {
+        Set-Location $CallerDirLocation
+    }
 }
 
 function Build-ISO {
-    Set-Location -Path "$FilePath\IntelWinFE\"
-    Write-Host "[-] Running Makex64-x86-CD.bat to create an ISO" -ForegroundColor Yellow
-    Start-Process -Wait -FilePath "$FilePath\IntelWinFE\Makex64-x86-CD.bat" -PassThru -NoNewWindow
+    try {
+        $CallerDirLocation = get-location
+        Set-Location -Path "$WorkingFilePath\IntelWinFE\"
+        Write-Host "[-] Running Makex64-x86-CD.bat to create an ISO" -ForegroundColor Yellow
+        Start-Process -Wait -FilePath "$WorkingFilePath\IntelWinFE\Makex64-x86-CD.bat" -PassThru -NoNewWindow
+        }
+    finally {
+        Set-Location $CallerDirLocation
+    }
 }
 
 function Prepare-Disk {
@@ -407,16 +432,16 @@ function Prepare-Disk {
     Set-Disk -InputObject $TargetDisk -PartitionStyle MBR
     Write-Host "[-] Creating a new partition on disk ${TargetDisk.DiskNumber}, making it active, and creating a FAT32 File System" -ForegroundColor Yellow
     if ($targetdisk.Size -gt 34359738368) {
-        New-Partition -inputobject $TargetDisk -Size 34359738368 -DriveLetter $DriveLetter.TrimEnd(':') -IsActive:$true | 
+        New-Partition -inputobject $TargetDisk -Size 34359738368 -DriveLetter $DriveLetter -IsActive:$true | 
         Format-Volume -FileSystem FAT32 -NewFileSystemLabel WinFE | Out-Null
     } else {
-        New-Partition -inputobject $TargetDisk -UseMaximumSize -DriveLetter $DriveLetter.TrimEnd(':') -IsActive:$true | 
+        New-Partition -inputobject $TargetDisk -UseMaximumSize -DriveLetter $DriveLetter -IsActive:$true | 
         Format-Volume -FileSystem FAT32 -NewFileSystemLabel WinFE | Out-Null
     }
-    Write-Host "[-] Copying contents of $FilePath\IntelWinFE\USB\x86-x64 to $DriveLetter" -ForegroundColor Yellow
-    Get-ChildItem -Path "$FilePath\IntelWinFE\USB\x86-x64" | Copy-Item -Destination $DriveLetter -Recurse -Container
+    Write-Host "[-] Copying contents of $WorkingFilePath\IntelWinFE\USB\x86-x64 to $DriveLetter" -ForegroundColor Yellow
+    Get-ChildItem -Path "$WorkingFilePath\IntelWinFE\USB\x86-x64" | Copy-Item -Destination ('{0}:' -f $DriveLetter) -Recurse -Container
     Write-Host "[-] Modifying Boot Sector" -ForegroundColor Yellow
-    bootsect.exe /NT60 $DriveLetter /force /mbr | Out-Null
+    bootsect.exe /NT60 ('{0}:' -f $DriveLetter) /force /mbr | Out-Null
     if ($?) {
         Write-Host "[+] Installation complete! You may now safely eject your device." -ForegroundColor Green
     } else {
@@ -425,10 +450,14 @@ function Prepare-Disk {
     }
 }
 function Get-ValidUSBDisk {
-    [function ()]
+    [cmdletbinding()]
     param()
+    Write-Host "[-] Checking for a partition with drive letter ""$DriveLetter"" on a USB disk."  -ForegroundColor Yellow
+
     $TargetDisk = get-disk | where-object -property path -eq $(get-partition | where-object {$_.diskid -match "usbstor" -and $_.driveletter -eq "d" }).diskid
     if ($TargetDisk) {
+        Write-Host "[+] USB disk containing drive ""$DriveLetter"" found"  -ForegroundColor White
+
         return $TargetDisk
     } else {
         Write-Host "[!] No USB device was found with the drive letter ""$DriveLetter"", so the script will terminate."  -ForegroundColor Red
@@ -437,8 +466,8 @@ function Get-ValidUSBDisk {
 }
 function Download-XWays() {
     $AuthToken = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($XUser + ":" + $XPass))
-    Invoke-WebRequest -Uri "http://www.x-ways.net/xwf/xw_forensics$XWVERSION.zip" -Method GET -Headers @{ Authorization = "Basic $AuthToken" } -UserAgent "IPWorks HTTPComponent - www.nsoftware.com" -UseBasicParsing -OutFile $FilePath\xw_forensics$XWVERSION.zip
-    Invoke-WebRequest -Uri "http://www.x-ways.net/res/viewer/xw_viewer.zip" -Method GET -Headers @{ Authorization = "Basic $AuthToken" } -UserAgent "IPWorks HTTPComponent - www.nsoftware.com" -UseBasicParsing -OutFile $FilePath\xw_viewer.zip
+    Invoke-WebRequest -Uri "http://www.x-ways.net/xwf/xw_forensics$XWVERSION.zip" -Method GET -Headers @{ Authorization = "Basic $AuthToken" } -UserAgent "IPWorks HTTPComponent - www.nsoftware.com" -UseBasicParsing -OutFile $WorkingFilePath\xw_forensics$XWVERSION.zip
+    Invoke-WebRequest -Uri "http://www.x-ways.net/res/viewer/xw_viewer.zip" -Method GET -Headers @{ Authorization = "Basic $AuthToken" } -UserAgent "IPWorks HTTPComponent - www.nsoftware.com" -UseBasicParsing -OutFile $WorkingFilePath\xw_viewer.zip
 }
 
 function Build-All {
@@ -466,12 +495,13 @@ function Invoke-WinFEInstaller {
         exit 1
     }
     $DriveLetter = $DriveLetter.TrimEnd("\")
-	if ($DriveLetter -eq "C:") {
+    $DriveLetter = $DriveLetter.TrimEnd(':')
+	if ($DriveLetter -eq "C") {
 		Write-Host "[!] DriveLetter cannot be C:. Please choose another drive letter" -ForegroundColor Red
 		exit 1
 	}
     $TargetDisk = Get-ValidUSBDisk
-    $FilePath = $FilePath.TrimEnd("\")
+    $WorkingFilePath = $WorkingFilePath.TrimEnd("\")
     if (($Mode -ne "online") -and ($Mode -ne "offline")) {
         Write-Host "[!] The only valid modes are 'online' or 'offline'." -ForegroundColor Red
         exit 1
@@ -488,8 +518,14 @@ function Invoke-WinFEInstaller {
     }
 }
 
-function Create-FilePath {
-	New-Item -ItemType "directory" -Path $FilePath | Out-Null
+function Create-WorkingFilePath {
+    if (-not $(test-path -pathtype container $WorkingFilePath)) {
+        Write-Host "[-] Creating working directory $WorkingFilePath" -ForegroundColor Yellow
+	    New-Item -ItemType "directory" -Path $WorkingFilePath | Out-Null
+    } else {
+        Write-Host "[+] Working directory $WorkingFilePath already exists" -ForegroundColor White
+
+    }
 }
 
 function Make-ISO {
@@ -529,19 +565,21 @@ When selecting the Offline mode, the following files will be required:
     The latest Intel WinFE package     $WINFE_SRC
 "@
 }
+Write-Host "[-] SCRIPT START"  -ForegroundColor Yellow
+
 if ($PSBoundParameters.Count -eq 0) {
     Show-WinFEInstallerHelp
     exit 1
 } elseif ($Help -and $PSBoundParameters.Count -eq 1) {
     Show-WinFEInstallerHelp
     exit 1
-} elseif (($Mode -eq 'online') -and ($PSBoundParameters.Count -ge 2) -and ($PSBoundParameters.ContainsKey('FilePath'))-and ($PSBoundParameters.ContainsKey('Mode'))) {
-    Write-Host "[!] FilePath is only required for offline installation" -ForegroundColor Red
+} elseif (($Mode -eq 'online') -and ($PSBoundParameters.Count -ge 2) -and ($PSBoundParameters.ContainsKey('WorkingFilePath'))-and ($PSBoundParameters.ContainsKey('Mode'))) {
+    Write-Host "[!] WorkingFilePath is only required for offline installation" -ForegroundColor Red
     exit 1
 } elseif ($DownloadOnly) {
     Start-Downloads
 	if ($?) { 
-	    Write-Host "[+] Downloads complete. Files saved to $FilePath." -ForegroundColor Green
+	    Write-Host "[+] Downloads complete. Files saved to $WorkingFilePath." -ForegroundColor Green
 	} else { 
 	    Write-Host "[!] One or more downloads failed." -ForegroundColor Red
 	}
