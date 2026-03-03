@@ -35,6 +35,7 @@ param (
   [switch]$Help,
   [string]$XUser = "",
   [string]$XPass = ""
+  ,[switch]$ADKMismatchOK
 )
 
 [string]$VERSION = '1.2a'
@@ -46,13 +47,18 @@ param (
 [string]$FTKIMG_x64_SRC="https://d1kpmuwb7gvu1i.cloudfront.net/Imgr/4.7.3.81%20Release/Exterro_FTK_Imager_(x64)-4.7.3.81.exe"
 [string]$FTKIMG_x64_FN="Exterro_FTK_Imager_(x64)-4.7.3.81.exe"
 [string]$FTKIMG_x64_HASH="443843a3923a55d479d6ebb339dfbec12b5c1aabed196bf0541669abbe9b1c51"
-[string]$WIN10ADK_VER="10.1.17134.1"
-[string]$WIN10ADK_SRC="https://go.microsoft.com/fwlink/?linkid=873065"
+[string]$WIN10ADK_VER="10.1.17763.7320"
+[string]$WIN10ADK_SRC="https://go.microsoft.com/fwlink/?linkid=2026036"
 [string]$WIN10ADK_FN="adksetup.exe"
 [string]$WIN10ADK_HASH="DF32DF3AD55419D1B8D3536F66EA87D00C0993FDB6534552A9B274249F1C0353"
+[string]$WIN10ADKPE_VER="10.1.17763.7320"
+[string]$WIN10ADKPE_SRC="https://go.microsoft.com/fwlink/?linkid=2022233"
+[string]$WIN10ADKPE_FN="adkwinpesetup.exe"
+[string]$WIN10ADKPE_HASH="9ACF1475FD56B48E8B0D4C81346318E8D6355D66D5CEB8CA947243455ED9EBBF"
 [string]$WINFE_SRC="https://www.winfe.net/files/IntelWinFE.7z"
 [string]$WINFE_FN="IntelWinFE.7z"
-[string]$WINFE_HASH="5F277E71AC57330017ABA534D38B09CD26EDA443BFF58F29733C005BEFD1F358"
+[string]$WINFE_HASH="27F6B082AC090C5AD7E01B792513F71A803D6BC1DD8915658EC15FECEFAD0106"
+#[string]$WINFE_HASH="5F277E71AC57330017ABA534D38B09CD26EDA443BFF58F29733C005BEFD1F358"
 [string]$7ZIP4PS_VER="2.1.0"
 [string]$7ZIP4PS_SRC="https://psg-prod-eastus.azureedge.net/packages/7zip4powershell.2.1.0.nupkg"
 [string]$7ZIP4PS_FN="7zip4powershell.2.1.0.nupkg"
@@ -76,7 +82,7 @@ function Compare-Hash($FileName, $HashName) {
         Write-Host "[+] Hashes match for $FileName, continuing..." -ForegroundColor Green
     } else {
         Write-Host "[+] Hashes do not match for $FileName, not continuing." -ForegroundColor Red
-        exit
+        Throw "File integrity validation error for $FileName`n`tExpected hash: $fileHash`n`tObserved hash: $HashName "
     }
 }
 
@@ -228,9 +234,14 @@ function Test-ADK {
     $InstalledADK = (Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' | Where-Object {$_.DisplayName -clike '*Assessment and Deployment Kit*' } | Select-Object DisplayName, DisplayVersion )
     if ($null -eq $InstalledADK.DisplayName) {
         return $False
-    } elseif ($InstalledADK.DisplayName -clike '*Assessment and Deployment Kit*' -and $InstalledADK.DisplayVersion -eq $WIN10ADK_VER) {
-        Write-Host "[+] Windows 10 Assessment and Deployment Kit is already installed"
-        return $True
+    } elseif ($InstalledADK.DisplayName -clike '*Assessment and Deployment Kit*' ) {
+        if ($InstalledADK.DisplayVersion -eq $WIN10ADK_VER) {
+            Write-Host "[+] Windows 10 Assessment and Deployment Kit $WIN10ADK_VER is already installed"
+            return $True
+        } elseif ($ADKMismatchOK) {
+            Write-Host "[+] Windows 10 Assessment and Deployment Kit ${InstalledADK.DisplayVersion} is installed. `nThis is not identical to the script's target version, $WIN10ADK_VER, but the ""ADKMismatchOK"" switch was provided so execution will continue."
+            return $True
+        }
     }
 }
 
@@ -241,14 +252,16 @@ function Start-Downloads {
     Write-Host "[-] Beginning file downloads" -ForegroundColor Yellow
     $DOWNLOADS = [ordered]@{
         "$WIN10ADK_SRC" = "$WIN10ADK_FN" ;
+        "$WIN10ADKPE_SRC" = "$WIN10ADKPE_FN" ;
 #        "$FTKIMG_x86_SRC" = "$FTKIMG_x86_FN" ;
         "$FTKIMG_x64_SRC" = "$FTKIMG_x64_FN" ;
         "$WINFE_SRC" = "$WINFE_FN";
-		"$7ZIP4PS_SRC" = "$7ZIP4PS_FN"
     }
     $SKIPADK = Test-ADK
     if ($SKIPADK) {
+        $DOWNLOADS.Removeat(0)
         $DOWNLOADS.RemoveAt(0)
+
     }
     foreach ($DOWNLOAD in $DOWNLOADS.GetEnumerator()) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -257,13 +270,15 @@ function Start-Downloads {
     }
     $HASHES = [ordered]@{
         "$FilePath\$WIN10ADK_FN" = "$WIN10ADK_HASH" ;
+        "$FilePath\$WIN10ADKPE_FN" = "$WIN10ADKPE_HASH" ;
 #        "$FilePath\$FTKIMG_x86_FN" = "$FTKIMG_x86_HASH" ;
         "$FilePath\$FTKIMG_x64_FN" = "$FTKIMG_x64_HASH" ;
         "$FilePath\$WINFE_FN" = "$WINFE_HASH";
-		"$FilePath\$7ZIP4PS_FN" = "$7ZIP4PS_HASH"
     }
     if ($SKIPADK) {
         $HASHES.RemoveAt(0)
+        $HASHES.RemoveAt(0)
+
     }
     foreach ($HASH in $HASHES.GetEnumerator()) {
         Compare-Hash -FileName $($HASH.Name) -HashName $($HASH.Value)
@@ -280,12 +295,14 @@ function Install-WinFERequirements {
         $FilePath = $FilePath.TrimEnd('\')
         $HASHES = [ordered]@{
             "$FilePath\$WIN10ADK_FN" = "$WIN10ADK_HASH" ;
+            "$FilePath\$WIN10ADKPE_FN" = "$WIN10ADKPE_HASH" ;
 #            "$FilePath\$FTKIMG_x86_FN" = "$FTKIMG_x86_HASH" ;
             "$FilePath\$FTKIMG_x64_FN" = "$FTKIMG_x64_HASH" ;
             "$FilePath\$WINFE_FN" = "$WINFE_HASH"
         }
         if ($SKIPADK) {
-            $HASHES.RemoveAt(0)
+           $HASHES.RemoveAt(0)
+           $HASHES.RemoveAt(0)
         }
         foreach ($HASH in $HASHES.GetEnumerator()) {
             Compare-Hash -FileName $($HASH.Name) -HashName $($HASH.Value)
@@ -294,9 +311,11 @@ function Install-WinFERequirements {
         $FilePath = "C:\Temp"
     }
     #$PROGRAMS = [ordered]@{ "$FTKIMG_x86_FN" = '/s /v/qn /v"INSTALLDIR="C:\FTKIMGx86""' ; "$FTKIMG_x64_FN" = '/s /v/qn /v"INSTALLDIR="C:\FTKIMGx64""'; "$WIN10ADK_FN" = "/quiet"}
-    $PROGRAMS = [ordered]@{ "$WIN10ADK_FN" = "/quiet"; "$FTKIMG_x64_FN" = '/s /v/qn /v"INSTALLDIR="C:\FTKIMGx64""'}
+    $PROGRAMS = [ordered]@{ "$WIN10ADK_FN" = "/features OptionId.DeploymentTools /quiet /norestart"; "$WIN10ADKPE_FN" = "/quiet  /norestart"; "$FTKIMG_x64_FN" = '/s /v/qn /v"INSTALLDIR="C:\FTKIMGx64""'}
     if ($SKIPADK) {
         $PROGRAMS.RemoveAt(0)
+        $PROGRAMS.RemoveAt(0)
+
     }
     if ($PROGRAMS.Count -eq 0) {
     Write-Host "[+] All requirements installed, continuing..."
@@ -309,9 +328,10 @@ function Install-WinFERequirements {
                 Write-Host "[+] $($PROGRAM.Name) installed successfully" -ForegroundColor Green
                 if ($($PROGRAM.Name) -like "*FTK*") { 
                     $INSTALLDIR = $($PROGRAM.Value).Split('=').Split('"')[3]
+                    write-host -ForegroundColor Yellow ('$INSTALLDIR: {0}' -f $INSTALLDIR)
                     $DEST = $INSTALLDIR.Split('\')[1]
                     Write-Host "[-] Creating $FilePath\$DEST" -ForegroundColor Yellow
-                    New-Item -ItemType "directory" -Path "$FilePath\" -Name "$DEST" -Force | Out-Null
+                    New-Item -ItemType "directory" -Path "$FilePath" -Name "$DEST" -Force | Out-Null
                     Get-ChildItem -Path "$INSTALLDIR\FTK Imager\" | Copy-Item -Destination "$FilePath\$DEST" -Recurse -Container -Force
                     Write-Host "[+] $INSTALLDIR\FTK Imager\ copied to $FilePath\$DEST" -ForegroundColor Green
                     Start-Process -Wait -FilePath "$FilePath\$($PROGRAM.Name)" -ArgumentList "/x /s /v/qn" -PassThru | Out-Null 
@@ -331,7 +351,9 @@ function Install-WinFERequirements {
 
 function Extract-WinFE {
     Write-Host "[-] Extracting WinFE to $FilePath" -ForegroundColor Yellow
-    Expand-7Zip -ArchiveFileName "$FilePath\$WINFE_FN" -TargetPath "$FilePath\IntelWinFE"
+    Expand-7Zip -ArchiveFileName "$FilePath\$WINFE_FN" -TargetPath "$FilePath"
+        #Expand-7Zip -ArchiveFileName "$FilePath\$WINFE_FN" -TargetPath "$FilePath\IntelWinFE"
+
 }
 
 function Extract-FTKImager8664 {
@@ -380,16 +402,15 @@ function Build-ISO {
 
 function Prepare-Disk {
     Write-Host "[-] Preparing USB drive for WinFE" -ForegroundColor Yellow
-    $DiskNumber = (Disk-Info | ? DriveLetter -eq $DriveLetter | Foreach { $_.DiskNumber})
-    Write-Host "[-] Clearing $DriveLetter, Disk Number $DiskNumber" -ForegroundColor Yellow
-    Get-Disk $DiskNumber | Clear-Disk -RemoveData -Confirm:$false
-    Set-Disk -Number $DiskNumber -PartitionStyle MBR
-    Write-Host "[-] Creating a new partition on $DriveLetter, making it active, creating FAT32 File System" -ForegroundColor Yellow
-    if ((Get-Disk $DiskNumber | foreach {$_.Size}) -gt 34359738368) {
-        New-Partition -DiskNumber $DiskNumber -Size 34359738368 -DriveLetter $DriveLetter.TrimEnd(':') -IsActive:$true | 
+    Write-Host "[-] Wiping Disk Number ${TargetDisk.DiskNumber} containing drive $DriveLetter." -ForegroundColor Yellow
+    Clear-Disk -InputObject $TargetDisk -RemoveData -Confirm:$false
+    Set-Disk -InputObject $TargetDisk -PartitionStyle MBR
+    Write-Host "[-] Creating a new partition on disk ${TargetDisk.DiskNumber}, making it active, and creating a FAT32 File System" -ForegroundColor Yellow
+    if ($targetdisk.Size -gt 34359738368) {
+        New-Partition -inputobject $TargetDisk -Size 34359738368 -DriveLetter $DriveLetter.TrimEnd(':') -IsActive:$true | 
         Format-Volume -FileSystem FAT32 -NewFileSystemLabel WinFE | Out-Null
     } else {
-        New-Partition -DiskNumber $DiskNumber -UseMaximumSize -DriveLetter $DriveLetter.TrimEnd(':') -IsActive:$true | 
+        New-Partition -inputobject $TargetDisk -UseMaximumSize -DriveLetter $DriveLetter.TrimEnd(':') -IsActive:$true | 
         Format-Volume -FileSystem FAT32 -NewFileSystemLabel WinFE | Out-Null
     }
     Write-Host "[-] Copying contents of $FilePath\IntelWinFE\USB\x86-x64 to $DriveLetter" -ForegroundColor Yellow
@@ -403,21 +424,17 @@ function Prepare-Disk {
         exit 1
     }
 }
-
-function Disk-Info {
-    Get-CimInstance Win32_Diskdrive -pv Disk |
-    % { Get-CimAssociatedInstance $_ -Result Win32_DiskPartition -pv Partition }|
-    % { Get-CimAssociatedInstance $_ -Result Win32_LogicalDisk } |
-    Select-Object @{n='DriveLetter';e={$_.DeviceID}},
-    @{n='DiskNumber';e={$Partition.DiskIndex}},
-    @{n='PartitionNumber';e={$Partition.Index}},
-    @{n='Disk';e={$Disk.DeviceID}},
-    @{n='DiskSize';e={$Disk.size}},
-    @{n='DiskModel';e={$Disk.model}},
-    @{n='Partition';e={$Partition.name}},
-    @{n='RawSize';e={$Partition.size}}
+function Get-ValidUSBDisk {
+    [function ()]
+    param()
+    $TargetDisk = get-disk | where-object -property path -eq $(get-partition | where-object {$_.diskid -match "usbstor" -and $_.driveletter -eq "d" }).diskid
+    if ($TargetDisk) {
+        return $TargetDisk
+    } else {
+        Write-Host "[!] No USB device was found with the drive letter ""$DriveLetter"", so the script will terminate."  -ForegroundColor Red
+        throw "Error: USB Drive letter $DriveLetter not found"
+    }
 }
-
 function Download-XWays() {
     $AuthToken = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($XUser + ":" + $XPass))
     Invoke-WebRequest -Uri "http://www.x-ways.net/xwf/xw_forensics$XWVERSION.zip" -Method GET -Headers @{ Authorization = "Basic $AuthToken" } -UserAgent "IPWorks HTTPComponent - www.nsoftware.com" -UseBasicParsing -OutFile $FilePath\xw_forensics$XWVERSION.zip
@@ -453,6 +470,7 @@ function Invoke-WinFEInstaller {
 		Write-Host "[!] DriveLetter cannot be C:. Please choose another drive letter" -ForegroundColor Red
 		exit 1
 	}
+    $TargetDisk = Get-ValidUSBDisk
     $FilePath = $FilePath.TrimEnd("\")
     if (($Mode -ne "online") -and ($Mode -ne "offline")) {
         Write-Host "[!] The only valid modes are 'online' or 'offline'." -ForegroundColor Red
